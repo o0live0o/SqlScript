@@ -1,0 +1,166 @@
+USE [IVS_BJXY]
+GO
+/****** Object:  StoredProcedure [dbo].[InsertGenerator]    Script Date: 09/10/2019 14:21:18 ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+ALTER  PROCEDURE [dbo].[InsertGenerator]
+    (
+      @tableName NVARCHAR(MAX),
+      @whereClause NVARCHAR(MAX)
+    )
+AS 
+
+--Then it includes a cursor to fetch column specific information (column name and the data type thereof) 
+--from information_schema.columns pseudo entity and loop through for building the INSERT and VALUES clauses 
+--of an INSERT DML statement.
+
+    DECLARE @string NVARCHAR(MAX) --for storing the first half of INSERT statement
+    DECLARE @stringData NVARCHAR(MAX) --for storing the data (VALUES) related statement
+    DECLARE @dataType NVARCHAR(MAX) --data types returned for respective columns
+    DECLARE @schemaName NVARCHAR(MAX) --schema name returned from sys.schemas
+    DECLARE @schemaNameCount int--shema count
+    DECLARE @QueryString  NVARCHAR(MAX) -- provide for the whole query, 
+
+    set @QueryString=' '
+
+     --如果有多个schema，选择其中一个schema
+    SELECT @schemaNameCount=COUNT(*)
+    FROM    sys.tables t
+            INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+    WHERE   t.name = @tableName
+
+    WHILE(@schemaNameCount>0)
+    BEGIN
+
+    --如果有多个schema，依次指定
+    select @schemaName = name 
+    from 
+    (
+        SELECT ROW_NUMBER() over(order by  s.schema_id) RowID,s.name
+        FROM    sys.tables t
+                INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
+        WHERE   t.name =  @tableName
+    ) as v
+    where RowID=@schemaNameCount
+
+    --Declare a cursor to retrieve column specific information 
+    --for the specified table
+    DECLARE cursCol CURSOR FAST_FORWARD
+    FOR
+        SELECT  column_name ,
+                data_type
+        FROM    information_schema.columns
+        WHERE   table_name = @tableName
+                AND table_schema = @schemaName
+ 
+    OPEN cursCol
+    SET @string = 'INSERT INTO [' + @schemaName + '].[' + @tableName + ']('
+    SET @stringData = ''
+
+    DECLARE @colName NVARCHAR(500)
+
+    FETCH NEXT FROM cursCol INTO @colName, @dataType
+
+    PRINT @schemaName
+    PRINT @colName
+    IF @@fetch_status <> 0
+        BEGIN
+            PRINT 'Table ' + @tableName + ' not found, processing skipped.'
+            CLOSE curscol
+            DEALLOCATE curscol
+            RETURN
+        END
+
+    WHILE @@FETCH_STATUS = 0
+        BEGIN
+            IF @dataType IN ( 'varchar', 'char', 'nchar', 'nvarchar' )
+                BEGIN
+                       SET @stringData = @stringData + '''''''''+
+                            isnull(' + @colName + ','''')+'''''',''+'
+                END
+            ELSE
+                IF @dataType IN ( 'text', 'ntext' ) --if the datatype 
+                                 --is text or something else 
+                    BEGIN
+                        SET @stringData = @stringData + '''''''''+
+          isnull(cast(' + @colName + ' as nvarchar(max)),'''')+'''''',''+'
+                    END
+                ELSE
+                    IF @dataType = 'money' --because money doesn't get converted 
+                       --from varchar implicitly
+                        BEGIN
+                            SET @stringData = @stringData
+                                + '''convert(money,''''''+
+        isnull(cast(' + @colName
+                                + ' as nvarchar(max)),''0.0000'')+''''''),''+'
+                        END
+                    ELSE
+                        IF @dataType = 'datetime'
+                            BEGIN
+                                SET @stringData = @stringData
+                                    + '''convert(datetime,''''''+
+        isnull(cast(' + @colName + ' as nvarchar(max)),''0'')+''''''),''+'
+                            END
+                        ELSE
+                            IF @dataType = 'image'
+                                BEGIN
+                                    SET @stringData = @stringData + '''''''''+
+       isnull(cast(convert(varbinary,' + @colName + ') 
+       as varchar(6)),''0'')+'''''',''+'
+                                END
+                            ELSE --presuming the data type is int,bit,numeric,decimal 
+                            BEGIN
+                                    SET @stringData = @stringData + '''''''''+
+          isnull(cast(' + @colName + ' as nvarchar(max)),''0'')+'''''',''+'
+                                END
+
+            SET @string = @string + '[' + @colName + ']' + ','
+
+            FETCH NEXT FROM cursCol INTO @colName, @dataType
+        END
+--After both of the clauses are built, the VALUES clause contains a trailing comma which needs to be replaced with a single quote. The prefixed clause will only face removal of the trailing comma.
+
+    DECLARE @Query NVARCHAR(MAX) -- provide for the whole query, 
+                              -- you may increase the size
+    PRINT @whereClause
+    IF ( @whereClause IS NOT NULL
+         AND @whereClause <> ''
+       )
+        BEGIN  
+            SET @query = 'SELECT ''' + SUBSTRING(@string, 0, LEN(@string))
+                + ') VALUES(''+ ' + SUBSTRING(@stringData, 0,
+                                              LEN(@stringData) - 2)
+                + '''+'')'' 
+   FROM ' +@schemaName+'.'+ @tableName + ' WHERE ' + @whereClause
+            PRINT @query
+           -- EXEC sp_executesql @query --load and run the built query
+--Eventually, close and de-allocate the cursor created for columns information.
+        END
+    ELSE
+  BEGIN 
+            SET @query = 'SELECT ''' + SUBSTRING(@string, 0, LEN(@string))
+                + ') VALUES(''+ ' + SUBSTRING(@stringData, 0,
+                                              LEN(@stringData) - 2)
+                + '''+'')'' 
+    FROM ' + @schemaName+'.'+ @tableName
+
+        END
+
+    CLOSE cursCol
+    DEALLOCATE cursCol
+
+    SET @schemaNameCount=@schemaNameCount-1
+    IF(@schemaNameCount=0)
+    BEGIN
+       SET @QueryString=@QueryString+@query
+    END
+    ELSE
+    BEGIN
+        SET @QueryString=@QueryString+@query+' UNION ALL '
+    END
+    PRINT convert(varchar(max),@schemaNameCount)+'---'+@QueryString
+    END
+    EXEC sp_executesql @QueryString --load and run the built query
+--Eventually, close and de-allocate the cursor created for columns information.
