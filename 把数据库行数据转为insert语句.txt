@@ -1,11 +1,9 @@
-USE [IVS_BJXY]
-GO
 /****** Object:  StoredProcedure [dbo].[InsertGenerator]    Script Date: 09/10/2019 14:21:18 ******/
 SET ANSI_NULLS ON
 GO
 SET QUOTED_IDENTIFIER ON
 GO
-ALTER  PROCEDURE [dbo].[InsertGenerator]
+CREATE PROCEDURE [dbo].[InsertGenerator]
     (
       @tableName NVARCHAR(MAX),
       @whereClause NVARCHAR(MAX)
